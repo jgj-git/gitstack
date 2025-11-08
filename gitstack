@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+BASE_STATE_DIR="~/.local/share/gitstack"
+STACKS_DIR="${BASE_STATE_DIR}/stacks"
+
+fail() {
+    printf "%s\n" "$*"
+    exit 1
+}
+
+help() {
+    printf 'gitstack is a program to help manage stacked branch patterns. Use\n'
+    printf 'gitstack from the top stacked branched to automatically rebase and\n'
+    printf 'push all the other stacked branches bellow it.\n\n'
+    printf 'The following commands are availabe:\n'
+    printf '\t- rebase: start an interactive rebase that will also rebase the\n'
+    printf '\t  stacked branches bellow head (using --update-refs), starting from\n'
+    printf '\t  a commit passed as an argument.\n'
+    printf '\t- push: push to all stacked branches between head and master\n'
+    printf '\t  (even if master is ahead of your stacked branches).\n' 
+    printf  'Usage: \tgstack rebase [-i] <base_commit> [arguments]\n'
+    printf  '\t\t\t gstack push <remote> [arguments]\n'
+    printf  '\t\t\t gstack create [branch_name] <stack_name> [arguments]\n'
+    exit
+}
+
+[[ $# -eq 0 ]] && fail 'Usage: gstack <command> [arguments]. Run gstack -h for help'
+[[ "$*" =~ [[:space:]](-h)|(--help)[[:space:]]* ]] && help
+
+COMMAND=$1
+MAX_NUM_REFLOG=100
+# add git flags, auto gitlab mr option
+
+case $COMMAND in
+"rebase")
+    [[ $# -gt 1 ]] || fail 'Usage: gstack rebase [-i] <base_commit> [arguments]'
+    REBASE_FLAGS=""
+    [[ "$*" =~ [[:space:]]-i[[:space:]]* ]] && REBASE_FLAGS+="-i"
+    [[ "$*" =~ ([[:space:]][^-][^[:space:]]*) ]] && BASE_COMMIT=${BASH_REMATCH[0]} &&
+        [[ $(git remote) == *${BASE_COMMIT}* ]] ||
+        fail $BASE_COMMIT is not a valid starting commit for the rebase.
+    git rebase $REBASE_FLAGS --update-refs $BASE_COMMIT
+    ;;
+"push")
+    XARG_FLAGS=""
+    [[ "$*" =~ [[:space:]](-s)|(--safe)[[:space:]]* ]] && XARG_FLAGS+="-p"
+    [[ $# -gt 1 ]] && REMOTE=$2 || REMOTE="origin"
+    git reflog -n 10 --decorate=full |
+        sed -n '/rebase (finish)/,/rebase (start)/ {p;/rebase (start)/q}' |
+        sed -n '/refs\/heads/ {s".*refs/heads/\([^,)]*\).*"\1";p}' | uniq | 
+        tac | xargs -n1 $XARG_FLAGS git push --force-with-lease $REMOTE
+    ;;
+"create")
+    STACK_NAME=$2
+    if [[ $# -gt 2 ]]; then
+        [[ $(git branch --format='%(refname:short)') != *${BASE_BRANCH_NAME}* ]] &&
+            BASE_BRANCH_NAME=$3 ||
+            fail Starting branch name not found in git repository: ${3}
+    else
+        BASE_BRANCH_NAME=$(git branch --show-current)
+    fi
+    [[ $STACK_NAME =~ [[:space:][:cntrl:]] ]] &&
+        fail Invalid stack name: $STACK_NAME. Please stick to alphanumeric and punctuation characters
+    [[ $(git rev-parse --show-toplevel) =~ [^/]*$ ]] &&
+        REPO_NAME=${BASH_REMATCH[0]} || fail Could not get repository name.
+    STACK_FILE="${STACKS_DIR}/${REPO_NAME}/${STACK_NAME}"
+    WRITE_FILE="y"
+    printf "%s\n" mkdir $BASE_STATE_DIR
+    [[ -d "$BASE_STATE_DIR" ]] || mkdir $BASE_STATE_DIR &&
+        fail ERROR: could not create directory $BASE_STATE_DIR
+    [[ -d "$STACKS_DIR" ]] || mkdir $STACKS_DIR &&
+        fail ERROR: could not create directory $BASE_STATE_DIR
+    if [[ -f ${STACKS_DIR}/${REPO_NAME}/${STACK_NAME} ]]; then
+        printf 'stack %s already exists (%s)\n' $STACK_NAME $STACK_FILE
+        printf 'Contents of stack:\n'
+        cat $STACK_FILE
+        printf 'Do you wish to overwrite this stack (y/n)?\n'
+        read WRITE_FILE
+    else
+        [[ -d ${STACKS_DIR} ]] || fail ERROR: could not create directory $STACKS_DIR
+    fi
+    [[ "$WRITE_FILE" != "y" ]] && exit 0
+    
+    ;;
+*)
+    fail Invalid command. Valid commands are: rebase, push.
+    ;;
+esac
