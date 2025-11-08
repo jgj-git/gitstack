@@ -29,7 +29,6 @@ help() {
 
 COMMAND=$1
 MAX_NUM_REFLOG=100
-# add git flags, auto gitlab mr option
 
 case $COMMAND in
 "rebase")
